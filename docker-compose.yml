@@ -1,0 +1,28 @@
+version: "3.8"
+
+services:
+  pr-review-agent:
+    build: .
+    container_name: pr-review-agent
+    env_file:
+      - config.env
+    volumes:
+      - ./pr_review_agent.log:/app/pr_review_agent.log
+      - ./reviewed_prs.json:/app/reviewed_prs.json
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import requests; requests.get('https://dev.azure.com', timeout=5)",
+        ]
+      interval: 60s
+      timeout: 10s
+      retries: 3

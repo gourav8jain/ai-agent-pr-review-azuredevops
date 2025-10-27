@@ -1,0 +1,35 @@
+[Unit]
+Description=Azure DevOps PR Review Agent
+Documentation=https://github.com/your-org/ai-agent-pr-review-azuredevops
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Update these paths to match your installation
+User=YOUR_USER
+Group=YOUR_GROUP
+WorkingDirectory=/path/to/ai-agent-pr-review-azuredevops
+Environment="PATH=/usr/bin:/usr/local/bin:/home/YOUR_USER/.local/bin"
+
+# Use absolute path to python and script
+ExecStart=/usr/bin/python3 /path/to/ai-agent-pr-review-azuredevops/main.py
+
+# Restart settings
+Restart=always
+RestartSec=10
+StartLimitInterval=200
+StartLimitBurst=5
+
+# Logging
+StandardOutput=append:/var/log/pr-review-agent/output.log
+StandardError=append:/var/log/pr-review-agent/error.log
+SyslogIdentifier=pr-review-agent
+
+# Security (optional)
+# NoNewPrivileges=true
+# PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
+
