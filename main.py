@@ -33,13 +33,14 @@ def load_configuration():
         'org_url': os.getenv('AZURE_DEVOPS_ORG_URL'),
         'pat': os.getenv('AZURE_DEVOPS_PERSONAL_ACCESS_TOKEN'),
         'project': os.getenv('AZURE_DEVOPS_PROJECT'),
+        'projects': [p.strip() for p in os.getenv('AZURE_DEVOPS_PROJECTS', os.getenv('AZURE_DEVOPS_PROJECT', '')).split(',') if p.strip()],
         'google_ai_key': os.getenv('GOOGLE_AI_API_KEY'),
         'model': os.getenv('AI_MODEL', 'gemini-2.0-flash-exp'),
         'poll_interval': int(os.getenv('POLL_INTERVAL_SECONDS', '30'))
     }
     
     # Validate required configuration
-    required = ['org_url', 'pat', 'project', 'google_ai_key']
+    required = ['org_url', 'pat', 'google_ai_key']
     missing = [key for key in required if not config.get(key)]
     
     if missing:
@@ -60,26 +61,24 @@ def main():
         
         logger.info(f"Configuration loaded:")
         logger.info(f"  Organization: {config['org_url']}")
-        logger.info(f"  Project: {config['project']}")
+        logger.info(f"  Projects: {', '.join(config['projects'])}")
         logger.info(f"  Model: {config['model']}")
         logger.info(f"  Poll Interval: {config['poll_interval']}s")
         
-        # Initialize clients
-        logger.info("Initializing Azure DevOps client...")
-        client = AzureDevOpsClient(
-            org_url=config['org_url'],
-            personal_access_token=config['pat'],
-            project_name=config['project']
-        )
-        
-        logger.info("Initializing AI reviewer (Gemini)...")
-        reviewer = AIReviewer(
-            api_key=config['google_ai_key'],
-            model=config['model']
-        )
-        
-        # Initialize review service
-        review_service = ReviewService(client, reviewer)
+        # Initialize services per project
+        services = []
+        logger.info("Initializing services for projects...")
+        for proj in config['projects']:
+            client = AzureDevOpsClient(
+                org_url=config['org_url'],
+                personal_access_token=config['pat'],
+                project_name=proj
+            )
+            reviewer = AIReviewer(
+                api_key=config['google_ai_key'],
+                model=config['model']
+            )
+            services.append((proj, ReviewService(client, reviewer)))
         
         logger.info("Service initialized successfully!")
         logger.info("Starting main loop...")
@@ -92,11 +91,15 @@ def main():
                 iteration += 1
                 logger.info(f"\n[{datetime.now()}] Iteration #{iteration}")
                 
-                # Process all active PRs
-                processed = review_service.process_all_active_prs()
+                # Process all active PRs for each project (current sprint only)
+                total_processed = 0
+                for proj, review_service in services:
+                    logger.info(f"Processing project: {proj}")
+                    processed = review_service.process_all_active_prs()
+                    total_processed += processed
                 
-                if processed > 0:
-                    logger.info(f"Processed {processed} new PR(s)")
+                if total_processed > 0:
+                    logger.info(f"Processed {total_processed} new PR(s) across projects")
                 else:
                     logger.debug("No new PRs to process")
                 

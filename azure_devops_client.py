@@ -2,7 +2,7 @@
 Azure DevOps API Client for interacting with PRs, repositories, and code.
 """
 import os
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 from azure.devops.connection import Connection
 from azure.devops.v7_0.git import GitPullRequest
 from azure.devops.v7_0.git.models import Comment, CommentPosition, CommentThread
@@ -34,11 +34,16 @@ class AzureDevOpsClient:
         # Get clients
         self.git_client = self.connection.clients.get_git_client()
         self.core_client = self.connection.clients.get_core_client()
+        self.work_client = self.connection.clients.get_work_client()
         
         logger.info(f"Initialized Azure DevOps client for {project_name}")
     
-    def get_active_pull_requests(self) -> List[GitPullRequest]:
-        """Get all active pull requests in the project."""
+    def get_active_pull_requests(self, date_window: Optional[Tuple] = None) -> List[GitPullRequest]:
+        """Get all active pull requests in the project.
+
+        Args:
+            date_window: Optional tuple (start_datetime, end_datetime) to filter PRs created/updated within sprint
+        """
         try:
             repos = self.git_client.get_repositories(project=self.project_name)
             all_prs = []
@@ -49,12 +54,12 @@ class AzureDevOpsClient:
                     # Note: Different API versions have different signatures
                     prs = self.git_client.get_pull_requests(repository_id=repo.id)
                     
-                    # Filter for active PRs (status = 'active' or status = 0)
+                    # Filter for active PRs (status = 'active' or status = 0) and within date window if provided
                     for pr in prs:
                         status = getattr(pr, 'status', None)
-                        # PR is active if status is None, 0, or the string 'active'
                         if status is None or status == 0 or str(status).lower() == 'active':
-                            all_prs.append(pr)
+                            if self._is_pr_in_window(pr, date_window):
+                                all_prs.append(pr)
                     
                 except TypeError as te:
                     # Different API version, try without search_criteria
@@ -66,7 +71,8 @@ class AzureDevOpsClient:
                         for pr in prs:
                             status = getattr(pr, 'status', None)
                             if status is None or status == 0:
-                                all_prs.append(pr)
+                                if self._is_pr_in_window(pr, date_window):
+                                    all_prs.append(pr)
                     except Exception as e:
                         logger.debug(f"Alternative method failed for repo {repo.name}: {str(e)}")
                 except Exception as e:
@@ -79,6 +85,51 @@ class AzureDevOpsClient:
             import traceback
             logger.error(traceback.format_exc())
             return []
+
+    def _is_pr_in_window(self, pr: GitPullRequest, date_window: Optional[Tuple]) -> bool:
+        """Return True if PR falls within the given (start, end) window.
+
+        Uses PR creation or last updated date for inclusion.
+        """
+        if not date_window:
+            return True
+        start_dt, end_dt = date_window
+        pr_created = getattr(pr, 'creation_date', None)
+        pr_updated = getattr(pr, 'closed_date', None) or getattr(pr, 'last_merge_source_commit', None)
+        # Fallback to created date when updated isn't available
+        candidate = pr_created
+        try:
+            if pr_updated and hasattr(pr_updated, 'date'):
+                candidate = pr_updated
+        except Exception:
+            pass
+        try:
+            return (candidate is not None) and (candidate >= start_dt) and (candidate <= end_dt)
+        except Exception:
+            return True
+
+    def get_current_sprint_window(self) -> Optional[Tuple]:
+        """Fetch current sprint window (start, end) for the default team of the project."""
+        try:
+            # Get default team: usually "{project_name} Team"
+            teams = self.core_client.get_teams(project_id=self.project_name)
+            team = teams[0] if teams else None
+            team_name = team.name if team else f"{self.project_name} Team"
+
+            # Build team context
+            from azure.devops.v7_0.work.models import TeamContext
+            team_context = TeamContext(project=self.project_name, team=team_name)
+
+            # Get current iteration
+            iterations = self.work_client.get_team_iterations(team_context=team_context, timeframe='current')
+            if not iterations:
+                logger.info("No current sprint found; defaulting to all dates")
+                return None
+            it = iterations[0]
+            return (it.attributes.start_date, it.attributes.finish_date)
+        except Exception as e:
+            logger.warning(f"Could not get current sprint window: {str(e)}")
+            return None
     
     def get_pull_request_changes(self, repository_id: str, pull_request_id: int) -> List[Dict]:
         """

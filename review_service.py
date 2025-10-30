@@ -61,7 +61,9 @@ class ReviewService:
         Returns:
             Number of PRs processed
         """
-        active_prs = self.client.get_active_pull_requests()
+        # Determine current sprint window (start, end) if available
+        sprint_window = self.client.get_current_sprint_window()
+        active_prs = self.client.get_active_pull_requests(date_window=sprint_window)
         processed_count = 0
         
         for pr in active_prs:

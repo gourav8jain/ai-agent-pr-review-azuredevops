@@ -51,7 +51,10 @@ An intelligent, continuously running agent that automatically reviews pull reque
    # Azure DevOps Configuration
    AZURE_DEVOPS_ORG_URL=https://dev.azure.com/your-organization
    AZURE_DEVOPS_PERSONAL_ACCESS_TOKEN=your_pat_here
+   # Single project (fallback)
    AZURE_DEVOPS_PROJECT=your-project-name
+   # Or multiple projects (comma-separated)
+   # AZURE_DEVOPS_PROJECTS=project-one,project-two
 
    # Google Gemini AI Configuration
    GOOGLE_AI_API_KEY=your_google_ai_api_key_here
@@ -199,7 +202,7 @@ Adjust `POLL_INTERVAL_SECONDS` to change how often the agent checks for new PRs:
 
 ## How It Works
 
-1. **Discovery**: The agent polls Azure DevOps for active pull requests
+1. **Discovery**: The agent polls Azure DevOps for active pull requests in the current sprint only
 2. **Analysis**: For each new PR:
    - Fetches file changes
    - Gets the diff between source and target branches
