@@ -3,6 +3,7 @@ Azure DevOps API Client for interacting with PRs, repositories, and code.
 """
 import os
 from typing import List, Dict, Optional, Tuple
+from datetime import datetime, timezone
 from azure.devops.connection import Connection
 from azure.devops.v7_0.git import GitPullRequest
 from azure.devops.v7_0.git.models import Comment, CommentPosition, CommentThread
@@ -109,26 +110,113 @@ class AzureDevOpsClient:
             return True
 
     def get_current_sprint_window(self) -> Optional[Tuple]:
-        """Fetch current sprint window (start, end) for the default team of the project."""
+        """Fetch current sprint window (start, end) for the project based on current date.
+        
+        Finds the iteration/sprint that contains today's date by checking all teams
+        and their iterations.
+        
+        Returns:
+            Tuple of (start_date, end_date) for the current iteration, or None if not found
+        """
         try:
-            # Get default team: usually "{project_name} Team"
-            teams = self.core_client.get_teams(project_id=self.project_name)
-            team = teams[0] if teams else None
-            team_name = team.name if team else f"{self.project_name} Team"
-
-            # Build team context
             from azure.devops.v7_0.work.models import TeamContext
-            team_context = TeamContext(project=self.project_name, team=team_name)
-
-            # Get current iteration
-            iterations = self.work_client.get_team_iterations(team_context=team_context, timeframe='current')
-            if not iterations:
-                logger.info("No current sprint found; defaulting to all dates")
+            
+            # Get current date (timezone-aware if possible)
+            current_date = datetime.now(timezone.utc).date()
+            logger.debug(f"Looking for sprint containing date: {current_date}")
+            
+            # Get all teams for the project
+            teams = self.core_client.get_teams(project_id=self.project_name)
+            if not teams:
+                logger.warning(f"No teams found for project {self.project_name}")
                 return None
-            it = iterations[0]
-            return (it.attributes.start_date, it.attributes.finish_date)
+            
+            # Try each team to find the current iteration
+            for team in teams:
+                try:
+                    team_name = team.name
+                    logger.debug(f"Checking team: {team_name}")
+                    
+                    # Build team context
+                    team_context = TeamContext(project=self.project_name, team=team_name)
+                    
+                    # Get iterations (current and future) to ensure we find the right one
+                    # We check both because Azure DevOps 'current' might not always align with today's date
+                    all_iterations = []
+                    for timeframe in ['current', 'future']:
+                        try:
+                            iterations = self.work_client.get_team_iterations(
+                                team_context=team_context, 
+                                timeframe=timeframe
+                            )
+                            if iterations:
+                                all_iterations.extend(iterations)
+                        except Exception as e:
+                            logger.debug(f"Could not get {timeframe} iterations for team {team_name}: {str(e)}")
+                            continue
+                    
+                    # If still no match, try past iterations (in case of date configuration issues)
+                    if not all_iterations:
+                        try:
+                            past_iterations = self.work_client.get_team_iterations(
+                                team_context=team_context, 
+                                timeframe='past'
+                            )
+                            if past_iterations:
+                                all_iterations.extend(past_iterations[-5:])  # Only check last 5 past iterations
+                        except Exception as e:
+                            logger.debug(f"Could not get past iterations for team {team_name}: {str(e)}")
+                    
+                    # Find the iteration that contains the current date
+                    for iteration in all_iterations:
+                        if iteration.attributes and hasattr(iteration.attributes, 'start_date') and hasattr(iteration.attributes, 'finish_date'):
+                            start_date = iteration.attributes.start_date
+                            finish_date = iteration.attributes.finish_date
+                            
+                            # Convert dates to date objects if they're datetime objects
+                            if isinstance(start_date, datetime):
+                                start_date = start_date.date()
+                            if isinstance(finish_date, datetime):
+                                finish_date = finish_date.date()
+                            
+                            # Check if current date falls within this iteration
+                            if start_date and finish_date:
+                                if start_date <= current_date <= finish_date:
+                                    logger.info(f"Found current sprint: {iteration.name} ({start_date} to {finish_date}) for team {team_name}")
+                                    # Return as datetime objects for consistency
+                                    start_dt = datetime.combine(start_date, datetime.min.time())
+                                    finish_dt = datetime.combine(finish_date, datetime.max.time())
+                                    # Make timezone-aware if needed
+                                    if start_dt.tzinfo is None:
+                                        start_dt = start_dt.replace(tzinfo=timezone.utc)
+                                    if finish_dt.tzinfo is None:
+                                        finish_dt = finish_dt.replace(tzinfo=timezone.utc)
+                                    return (start_dt, finish_dt)
+                    
+                except Exception as e:
+                    logger.debug(f"Error checking team {team.name if hasattr(team, 'name') else 'unknown'}: {str(e)}")
+                    continue
+            
+            # If no iteration found, try using the 'current' timeframe on first team
+            logger.info("No iteration found containing current date, trying 'current' timeframe...")
+            first_team = teams[0]
+            team_context = TeamContext(project=self.project_name, team=first_team.name)
+            iterations = self.work_client.get_team_iterations(team_context=team_context, timeframe='current')
+            if iterations and len(iterations) > 0:
+                it = iterations[0]
+                if it.attributes and hasattr(it.attributes, 'start_date') and hasattr(it.attributes, 'finish_date'):
+                    start_date = it.attributes.start_date
+                    finish_date = it.attributes.finish_date
+                    logger.info(f"Using 'current' sprint: {it.name} ({start_date} to {finish_date})")
+                    return (start_date, finish_date)
+            
+            logger.info("No current sprint found for any team; defaulting to all dates")
+            return None
+            
         except Exception as e:
             logger.warning(f"Could not get current sprint window: {str(e)}")
+            import traceback
+            logger.debug(traceback.format_exc())
             return None
     
     def get_pull_request_changes(self, repository_id: str, pull_request_id: int) -> List[Dict]:
